@@ -1,3 +1,6 @@
+Inherited from repo [DeepLearningExamples](https://github.com/NVIDIA/DeepLearningExamples/tree/master/TensorFlow2/Recommendation/WideAndDeep)
+
+---
 # Wide & Deep Recommender Model Training For TensorFlow 2
 
 This repository provides a script and recipe to train the Wide and Deep Recommender model to achieve state-of-the-art accuracy.
