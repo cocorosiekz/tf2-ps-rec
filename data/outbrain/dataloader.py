@@ -65,7 +65,7 @@ def train_input_fn(
     )
 
     dataset = dataset.shard(num_gpus, id)
-
+    
     dataset = dataset.shuffle(records_batch_size * 8)
 
     dataset = dataset.repeat(

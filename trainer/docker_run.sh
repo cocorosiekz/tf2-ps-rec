@@ -1,0 +1,1 @@
+nvidia-docker run --rm -it --privileged --ipc=host -v /home/dgxsa/yuanqingz/wd2/data/78401:/outbrain -v /home/dgxsa/yuanqingz/wd2/tensorflow2widedeep/:/wd wd2-train-ps bash

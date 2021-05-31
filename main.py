@@ -13,18 +13,24 @@
 # limitations under the License.
 
 from trainer.model.widedeep import wide_deep_model
-from trainer.run import train, evaluate
-from trainer.utils.arguments import parse_args
+from trainer.run import train, evaluate, ps_train
+from trainer.utils.arguments import parse_args, MODE_PS
 from trainer.utils.setup import create_config
 
 
 def main():
     args = parse_args()
     config = create_config(args)
-    model = wide_deep_model(args)
+    if args.mode == MODE_PS:
+        with config["strategy"].scope():
+            model = wide_deep_model(args)
+    else:
+        model = wide_deep_model(args)
 
     if args.evaluate:
         evaluate(args, model, config)
+    elif args.mode == MODE_PS:
+        ps_train(args, model, config)
     else:
         train(args, model, config)
 

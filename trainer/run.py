@@ -16,13 +16,58 @@ import logging
 import os
 import time
 
+from tensorflow.python.framework.errors_impl import OutOfRangeError
+
 import dllogger
 import horovod.tensorflow as hvd
+import multiprocessing
 import numpy as np
+import portpicker
 import tensorflow as tf
 from data.outbrain.features import DISPLAY_ID_COLUMN
 from tensorflow.python.keras import backend as K
+from trainer.utils.arguments import MODE_HOROVOD
 from trainer.utils.schedulers import get_schedule
+
+
+def create_in_process_cluster(num_workers, num_ps):
+  """Creates and starts local servers and returns the cluster_resolver."""
+  worker_ports = [portpicker.pick_unused_port() for _ in range(num_workers)]
+  ps_ports = [portpicker.pick_unused_port() for _ in range(num_ps)]
+
+  cluster_dict = {}
+  cluster_dict["worker"] = ["localhost:%s" % port for port in worker_ports]
+  if num_ps > 0:
+    cluster_dict["ps"] = ["localhost:%s" % port for port in ps_ports]
+
+  cluster_spec = tf.train.ClusterSpec(cluster_dict)
+
+  # Workers need some inter_ops threads to work properly.
+  worker_config = tf.compat.v1.ConfigProto()
+  if multiprocessing.cpu_count() < num_workers + 1:
+    worker_config.inter_op_parallelism_threads = num_workers + 1
+
+  for i in range(num_workers):
+    tf.distribute.Server(
+        cluster_spec, job_name="worker", task_index=i, config=worker_config,
+        protocol="grpc")
+
+  for i in range(num_ps):
+    tf.distribute.Server(
+        cluster_spec, job_name="ps", task_index=i, protocol="grpc")
+
+  cluster_resolver = tf.distribute.cluster_resolver.SimpleClusterResolver(
+      cluster_spec, rpc_layer="grpc")
+  return cluster_resolver
+
+
+# Set the environment variable to allow reporting worker and ps failure to the
+# coordinator. This is a workaround and won't be necessary in the future.
+os.environ["GRPC_FAIL_FAST"] = "use_caller"
+
+NUM_WORKERS = 3
+NUM_PS = 2
+cluster_resolver = create_in_process_cluster(NUM_WORKERS, NUM_PS)
 
 
 def train(args, model, config):
@@ -31,6 +76,7 @@ def train(args, model, config):
     train_dataset = config['train_dataset']
     eval_dataset = config['eval_dataset']
     steps = int(config['steps_per_epoch'])
+
     schedule = get_schedule(
         args=args,
         steps_per_epoch=steps
@@ -97,7 +143,7 @@ def train(args, model, config):
             linear_loss = wide_optimizer.get_scaled_loss(loss) if args.amp else loss
             deep_loss = deep_optimizer.get_scaled_loss(loss) if args.amp else loss
 
-        if not args.cpu:
+        if args.mode == MODE_HOROVOD:
             tape = hvd.DistributedGradientTape(tape)
 
         for metric in metrics:
@@ -113,7 +159,7 @@ def train(args, model, config):
 
         wide_optimizer.apply_gradients(zip(linear_grads, linear_vars))
         deep_optimizer.apply_gradients(zip(dnn_grads, dnn_vars))
-        if first_batch and not args.cpu:
+        if first_batch and args.mode == MODE_HOROVOD:
             hvd.broadcast_variables(model.linear_model.variables, root_rank=0)
             hvd.broadcast_variables(model.dnn_model.variables, root_rank=0)
             hvd.broadcast_variables(wide_optimizer.variables(), root_rank=0)
@@ -174,7 +220,7 @@ def train(args, model, config):
                 for metric in metrics:
                     metric.reset_states()
                 loss = train_step(x, y, epoch == 1 and step == 0)
-                if args.cpu or hvd.rank() == 0:
+                if args.mode != MODE_HOROVOD or hvd.rank() == 0:
                     for metric in metrics:
                         tf.summary.scalar(f'{metric.name}', metric.result(), step=current_step)
                     tf.summary.scalar('loss', loss, step=current_step)
@@ -222,15 +268,15 @@ def train(args, model, config):
                 loss = evaluation_step(x, y)
                 eval_loss.update_state(loss)
 
-            map_metric = tf.divide(streaming_map, display_id_counter) if args.cpu else \
+            map_metric = tf.divide(streaming_map, display_id_counter) if args.mode != MODE_HOROVOD else \
                 hvd.allreduce(tf.divide(streaming_map, display_id_counter))
 
             map_metric = map_metric.numpy()
-            eval_loss_reduced = eval_loss.result() if args.cpu else \
+            eval_loss_reduced = eval_loss.result() if args.mode != MODE_HOROVOD else \
                 hvd.allreduce(eval_loss.result())
 
             metrics_reduced = {
-                f'{metric.name}_val': metric.result() if args.cpu else
+                f'{metric.name}_val': metric.result() if args.mode != MODE_HOROVOD else
                 hvd.allreduce(metric.result()) for metric in metrics
             }
 
@@ -247,13 +293,137 @@ def train(args, model, config):
             })
             dllogger.log(data=eval_data, step=(steps * epoch, args.num_epochs * steps))
 
-            if args.cpu or hvd.rank() == 0:
+            if args.mode != MODE_HOROVOD or hvd.rank() == 0:
                 manager.save()
 
             display_id_counter.assign(0)
             streaming_map.assign(0)
-        if args.cpu or hvd.rank() == 0:
+        if args.mode != MODE_HOROVOD or hvd.rank() == 0:
             dllogger.log(data=eval_data, step=tuple())
+
+
+def ps_train(args, model, config):
+    logger = logging.getLogger('tensorflow')
+
+    train_dataset = config['ps_train_dataset']
+    strategy = config["strategy"]
+
+    writer = tf.summary.create_file_writer(os.path.join(args.model_dir, 'event_files'))
+
+    with strategy.scope():
+        deep_optimizer = tf.keras.optimizers.RMSprop(
+            learning_rate=args.deep_learning_rate,
+            rho=0.5
+        )
+
+        wide_optimizer = tf.keras.optimizers.Ftrl(
+            learning_rate=args.linear_learning_rate
+        )
+
+    metrics = [
+        tf.keras.metrics.BinaryAccuracy(),
+        tf.keras.metrics.AUC()
+    ]
+
+    current_step_var = tf.Variable(0, trainable=False, dtype=tf.int64)
+
+    checkpoint = tf.train.Checkpoint(
+        deep_optimizer=deep_optimizer,
+        wide_optimizer=wide_optimizer,
+        model=model,
+        current_step=current_step_var
+    )
+    manager = tf.train.CheckpointManager(
+        checkpoint=checkpoint,
+        directory=os.path.join(args.model_dir, 'checkpoint'),
+        max_to_keep=1
+    )
+
+    if args.use_checkpoint:
+        checkpoint.restore(manager.latest_checkpoint)
+        if manager.latest_checkpoint:
+            logger.warning(f'Model restored from checkpoint {args.model_dir}')
+            if args.benchmark:
+                current_step_var.assign(0)
+        else:
+            logger.warning(f'Failed to restore model from checkpoint {args.model_dir}')
+
+    if args.amp:
+        with strategy.scope():
+            deep_optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(
+                deep_optimizer,
+                loss_scale='dynamic'
+            )
+            wide_optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(
+                wide_optimizer,
+                loss_scale='dynamic'
+            )
+
+    coordinator = tf.distribute.experimental.coordinator.ClusterCoordinator(strategy)
+
+    @tf.function
+    def per_worker_dataset_fn():
+        return strategy.distribute_datasets_from_function(train_dataset)
+
+    per_worker_dataset = coordinator.create_per_worker_dataset(per_worker_dataset_fn)
+    per_worker_iterator = iter(per_worker_dataset)
+
+    @tf.function
+    def train_step(iterator):
+        def replica_fn(x, y):
+            with tf.GradientTape(persistent=True) as tape:
+                y_pred = model(x, training=True)
+                per_example_loss  = tf.keras.losses.BinaryCrossentropy(
+                    reduction=tf.keras.losses.Reduction.NONE)(y, y_pred)
+                loss = tf.nn.compute_average_loss(per_example_loss)
+                linear_loss = wide_optimizer.get_scaled_loss(loss) if args.amp else loss
+                deep_loss = deep_optimizer.get_scaled_loss(loss) if args.amp else loss
+
+                linear_vars = model.linear_model.trainable_variables
+                dnn_vars = model.dnn_model.trainable_variables
+                linear_grads = tape.gradient(linear_loss, linear_vars)
+                dnn_grads = tape.gradient(deep_loss, dnn_vars)
+                if args.amp:
+                    linear_grads = wide_optimizer.get_unscaled_gradients(linear_grads)
+                    dnn_grads = deep_optimizer.get_unscaled_gradients(dnn_grads)
+
+            wide_optimizer.apply_gradients(zip(linear_grads, linear_vars))
+            deep_optimizer.apply_gradients(zip(dnn_grads, dnn_vars))
+            for metric in metrics:
+                metric.update_state(y, y_pred)
+            return loss
+        
+        batch_data, labels = next(iterator)
+        losses = strategy.run(replica_fn, args=(batch_data, labels))
+        return strategy.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
+
+    STEPS_PER_EPOCH = 100
+
+    with writer.as_default():
+        current_step = np.asscalar(current_step_var.numpy())
+        for epoch in range(1, args.num_epochs + 1):
+            for metric in metrics:
+                metric.reset_states()
+            loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
+            print ("Final loss is %f" % loss.fetch())
+            for metric in metrics:
+                print (f'{metric.name}: {metric.result()}')
+            # while True:
+            #     try:
+            #         for _ in range(STEPS_PER_EPOCH):
+            #             loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
+            #         logger.info('***** Before coordinator.join')
+            #         coordinator.join()
+            #         logger.info('***** After coordinator.join')
+            #         current_step += STEPS_PER_EPOCH
+            #         for metric in metrics:
+            #             tf.summary.scalar(f'{metric.name}', metric.result(), step=current_step)
+            #         tf.summary.scalar('loss', loss.fetch(), step=current_step)
+            #         tf.summary.scalar('schedule', K.get_value(deep_optimizer.lr), step=current_step)
+            #     except OutOfRangeError as e:
+            #         logger.info(f'Training epoch {epoch} complete.')
+            #         break
+        logger.warning('Training all complete.')
 
 
 def evaluate(args, model, config):
@@ -367,14 +537,14 @@ def evaluate(args, model, config):
             if current_step > boundary:
                 batch_time = time.time() - t_batch
                 samplesps = args.eval_batch_size / batch_time
-                if args.cpu or hvd.rank() == 0:
+                if args.mode != MODE_HOROVOD or hvd.rank() == 0:
                     dllogger.log(data={'batch_samplesps': samplesps}, step=(1, current_step))
 
                 if args.benchmark_steps <= current_step:
                     valid_time = time.time() - t0
                     epochs = args.benchmark_steps - max(args.benchmark_warmup_steps, 1)
                     valid_throughput = (args.eval_batch_size * epochs) / valid_time
-                    if args.cpu or hvd.rank() == 0:
+                    if args.mode != MODE_HOROVOD or hvd.rank() == 0:
                         dllogger.log(
                             data={'validation_throughput': valid_throughput},
                             step=tuple()
@@ -385,18 +555,18 @@ def evaluate(args, model, config):
             if step % 100 == 0:
                 valid_data = {metric.name: f'{metric.result().numpy():.4f}' for metric in metrics}
                 valid_data['loss'] = f'{loss.numpy():.4f}'
-                if args.cpu or hvd.rank() == 0:
+                if args.mode != MODE_HOROVOD or hvd.rank() == 0:
                     dllogger.log(data=valid_data, step=(step,))
         current_step += 1
         t_batch = time.time()
 
-    map_metric = tf.divide(streaming_map, display_id_counter) if args.cpu else \
+    map_metric = tf.divide(streaming_map, display_id_counter) if args.mode != MODE_HOROVOD else \
         hvd.allreduce(tf.divide(streaming_map, display_id_counter))
-    eval_loss_reduced = eval_loss.result() if args.cpu else \
+    eval_loss_reduced = eval_loss.result() if args.mode != MODE_HOROVOD else \
         hvd.allreduce(eval_loss.result())
 
     metrics_reduced = {
-        f'{metric.name}_val': metric.result() if args.cpu else
+        f'{metric.name}_val': metric.result() if args.mode != MODE_HOROVOD else
         hvd.allreduce(metric.result()) for metric in metrics
     }
 

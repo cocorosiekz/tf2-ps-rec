@@ -17,6 +17,10 @@ import argparse
 # Default train dataset size
 TRAIN_DATASET_SIZE = 59761827
 
+MODE_CPU = "cpu"
+MODE_HOROVOD = "horovod"
+MODE_PS = "ps"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -64,8 +68,8 @@ def parse_args():
     training_params.add_argument('--num_epochs', type=int, default=20,
                                  help='Number of training epochs')
 
-    training_params.add_argument('--cpu', default=False, action='store_true',
-                                 help='Run computations on the CPU')
+    training_params.add_argument('--mode', default="horovod", choices=[MODE_CPU, MODE_HOROVOD, MODE_PS],
+                                 help='Run computations on the CPU / GPU with horovod / GPU with parameter server')
 
     training_params.add_argument('--amp', default=False, action='store_true',
                                  help='Enable automatic mixed precision conversion')
