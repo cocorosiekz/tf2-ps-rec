@@ -18,3 +18,5 @@
 /_python_build
 *.pyc
 __pycache__
+.devcontainer/
+.vscode/
