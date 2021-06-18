@@ -20,7 +20,6 @@ from tensorflow.python.framework.errors_impl import OutOfRangeError
 
 import dllogger
 import horovod.tensorflow as hvd
-import multiprocessing
 import numpy as np
 import tensorflow as tf
 from data.outbrain.features import DISPLAY_ID_COLUMN
