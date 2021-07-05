@@ -1,5 +1,11 @@
 Inherited from repo [DeepLearningExamples](https://github.com/NVIDIA/DeepLearningExamples/tree/master/TensorFlow2/Recommendation/WideAndDeep)
 
+# Pendragon Training Benchmark
+
+|Mode | GPU | Batch size | Throughtput
+|---- | --- | ---------- | -
+|Horovod| 1 | 131072     | 314877.77
+|Horovod| 8 | 131072     | 1374869.85
 ---
 # Wide & Deep Recommender Model Training For TensorFlow 2
 

@@ -265,6 +265,12 @@ def ps_train(args, model, config):
 
     train_dataset = config['ps_train_dataset']
     strategy = config["strategy"]
+    steps = int(config['steps_per_epoch'])
+
+    schedule = get_schedule(
+        args=args,
+        steps_per_epoch=steps
+    )
 
     writer = tf.summary.create_file_writer(os.path.join(args.model_dir, 'event_files'))
 
@@ -355,32 +361,56 @@ def ps_train(args, model, config):
         losses = strategy.run(replica_fn, args=(batch_data, labels))
         return strategy.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
-    STEPS_PER_EPOCH = 100
+    STEPS_PER_BARRIER = 4
 
     with writer.as_default():
-        current_step = np.asscalar(current_step_var.numpy())
         for epoch in range(1, args.num_epochs + 1):
             for metric in metrics:
                 metric.reset_states()
-            loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
-            print ("Final loss is %f" % loss.fetch())
-            for metric in metrics:
-                print (f'{metric.name}: {metric.result()}')
-            # while True:
-            #     try:
-            #         for _ in range(STEPS_PER_EPOCH):
-            #             loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
-            #         logger.info('***** Before coordinator.join')
-            #         coordinator.join()
-            #         logger.info('***** After coordinator.join')
-            #         current_step += STEPS_PER_EPOCH
-            #         for metric in metrics:
-            #             tf.summary.scalar(f'{metric.name}', metric.result(), step=current_step)
-            #         tf.summary.scalar('loss', loss.fetch(), step=current_step)
-            #         tf.summary.scalar('schedule', K.get_value(deep_optimizer.lr), step=current_step)
-            #     except OutOfRangeError as e:
-            #         logger.info(f'Training epoch {epoch} complete.')
-            #         break
+            # loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
+            # print ("Final loss is %f" % loss.fetch())
+            # for metric in metrics:
+            #     print (f'{metric.name}: {metric.result()}')
+            while True:
+                try:
+                    for _ in range(STEPS_PER_BARRIER):
+                        current_step = np.asscalar(current_step_var.numpy())
+                        schedule(optimizer=deep_optimizer, current_step=current_step)
+                        loss = coordinator.schedule(train_step, args=(per_worker_iterator, ))
+                        current_step_var.assign_add(1)
+
+                    # logger.info('***** Before coordinator.join')
+                    coordinator.join()
+                    # logger.info('***** After coordinator.join')
+
+                    for metric in metrics:
+                        tf.summary.scalar(f'{metric.name}', metric.result(), step=current_step)
+                    tf.summary.scalar('loss', loss.fetch(), step=current_step)
+                    tf.summary.scalar('schedule', K.get_value(deep_optimizer.lr), step=current_step)
+                    writer.flush()
+
+                    if args.benchmark:
+                        boundary = max(args.benchmark_warmup_steps, 1)
+                        if current_step == boundary:
+                            t0 = time.time()
+                        if current_step > boundary:
+                            batch_time = time.time() - t_batch
+                            samplesps = args.global_batch_size * STEPS_PER_BARRIER / batch_time
+                            dllogger.log(data={'batch_samplesps': samplesps}, step=(1, current_step))
+
+                            if args.benchmark_steps <= current_step:
+                                train_time = time.time() - t0
+                                epochs = args.benchmark_steps - max(args.benchmark_warmup_steps, 1)
+                                train_throughput = (args.global_batch_size * epochs) / train_time
+                                dllogger.log(
+                                    data={'train_throughput': train_throughput},
+                                    step=tuple()
+                                )
+                                return
+                    t_batch = time.time()
+                except OutOfRangeError as e:
+                    logger.info(f'Training epoch {epoch} complete.')
+                    break
         logger.warning('Training all complete.')
 
 
