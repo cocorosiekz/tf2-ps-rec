@@ -102,6 +102,53 @@ def init_ps(args, logger):
     return strategy
 
 
+def init_ps_distributed(args, logger):
+
+    init_logger(
+        full=True,
+        args=args,
+        logger=logger
+    )
+
+    os.environ["TF_CONFIG"] = json.dumps({
+        "cluster": {
+            "worker": ["localhost:19897", "localhost:19898", "localhost:19899"],
+            "ps": ["localhost:19900"],
+            "chief": ["localhost:19901"]
+        },
+        "task": {"type": args.ps_task_type, "index": args.ps_task_index}
+    })
+
+    cluster_resolver = tf.distribute.cluster_resolver.TFConfigClusterResolver()
+    if cluster_resolver.task_type in ("worker", "ps"):
+        os.environ["GRPC_FAIL_FAST"] = "use_caller"
+
+        server = tf.distribute.Server(
+            cluster_resolver.cluster_spec(),
+            job_name=cluster_resolver.task_type,
+            task_index=cluster_resolver.task_id,
+            protocol=cluster_resolver.rpc_layer or "grpc",
+            start=True)
+        server.join()
+    
+    if args.amp:
+        policy = tf.keras.mixed_precision.experimental.Policy("mixed_float16")
+        tf.keras.mixed_precision.experimental.set_policy(policy)
+
+    if args.xla:
+        tf.config.optimizer.set_jit(True)
+
+    variable_partitioner = (
+    tf.distribute.experimental.partitioners.FixedShardsPartitioner(
+        num_shards=1))
+
+    strategy = tf.distribute.experimental.ParameterServerStrategy(
+        cluster_resolver,
+        variable_partitioner=variable_partitioner)
+
+    return strategy
+
+
 def init_logger(args, full, logger):
     if full:
         logger.setLevel(logging.INFO)
@@ -168,8 +215,10 @@ def create_config(args):
         init_cpu(args, logger)
     elif args.mode == MODE_HOROVOD:
         init_horovod(args, logger)
-    else:
+    elif args.in_process:
         strategy = init_ps(args, logger)
+    else:
+        strategy = init_ps_distributed(args, logger)
 
     num_gpus = 1 if args.mode != MODE_HOROVOD else hvd.size()
     gpu_id = 0 if args.mode != MODE_HOROVOD else hvd.rank()

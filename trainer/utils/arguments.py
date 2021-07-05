@@ -71,6 +71,13 @@ def parse_args():
     training_params.add_argument('--mode', default="horovod", choices=[MODE_CPU, MODE_HOROVOD, MODE_PS],
                                  help='Run computations on the CPU / GPU with horovod / GPU with parameter server')
 
+    training_params.add_argument('--in_process', default=False, action='store_true',
+                                 help='Enable in-process mode in PS based training')
+    
+    training_params.add_argument('--ps_task_type', type=str)
+
+    training_params.add_argument('--ps_task_index', type=int)
+
     training_params.add_argument('--amp', default=False, action='store_true',
                                  help='Enable automatic mixed precision conversion')
 
