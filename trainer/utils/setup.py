@@ -112,7 +112,7 @@ def init_ps_distributed(args, logger):
 
     os.environ["TF_CONFIG"] = json.dumps({
         "cluster": {
-            "worker": ["localhost:19897", "localhost:19898", "localhost:19899"],
+            "worker": ["localhost:19897", "localhost:19898"],
             "ps": ["localhost:19900"],
             "chief": ["localhost:19901"]
         },
@@ -122,6 +122,13 @@ def init_ps_distributed(args, logger):
     cluster_resolver = tf.distribute.cluster_resolver.TFConfigClusterResolver()
     if cluster_resolver.task_type in ("worker", "ps"):
         os.environ["GRPC_FAIL_FAST"] = "use_caller"
+
+        if cluster_resolver.task_type == "worker":
+            physical_devices = tf.config.list_physical_devices('GPU')
+            if cluster_resolver.task_id == 0:
+                tf.config.set_visible_devices(physical_devices[:4], 'GPU')
+            else:
+                tf.config.set_visible_devices(physical_devices[4:], 'GPU')
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
