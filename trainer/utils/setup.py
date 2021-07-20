@@ -129,6 +129,9 @@ def init_ps_distributed(args, logger):
                 tf.config.set_visible_devices(physical_devices[:4], 'GPU')
             else:
                 tf.config.set_visible_devices(physical_devices[4:], 'GPU')
+            logical_devices = tf.config.list_logical_devices('GPU')
+            print("========= List logical devices:")
+            print(logical_devices)
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
