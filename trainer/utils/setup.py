@@ -17,6 +17,7 @@ import logging
 import os
 
 import dllogger
+from tensorflow.core.protobuf.config_pb2 import GPUOptions
 import horovod.tensorflow.keras as hvd
 import multiprocessing
 import portpicker
@@ -123,22 +124,21 @@ def init_ps_distributed(args, logger):
     if cluster_resolver.task_type in ("worker", "ps"):
         os.environ["GRPC_FAIL_FAST"] = "use_caller"
 
+        config = tf.compat.v1.ConfigProto()
+
         if cluster_resolver.task_type == "worker":
-            physical_devices = tf.config.list_physical_devices('GPU')
             if cluster_resolver.task_id == 0:
-                tf.config.set_visible_devices(physical_devices[:4], 'GPU')
+                config.gpu_options = tf.compat.v1.GPUOptions(visible_device_list="0,1,2,3")
             else:
-                tf.config.set_visible_devices(physical_devices[4:], 'GPU')
-            logical_devices = tf.config.list_logical_devices('GPU')
-            print("========= List logical devices:")
-            print(logical_devices)
+                config.gpu_options = tf.compat.v1.GPUOptions(visible_device_list="4,5,6,7")
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
             job_name=cluster_resolver.task_type,
             task_index=cluster_resolver.task_id,
             protocol=cluster_resolver.rpc_layer or "grpc",
-            start=True)
+            start=True,
+            config=config)
         server.join()
     
     if args.amp:
