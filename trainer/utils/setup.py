@@ -116,6 +116,8 @@ def init_ps_distributed(args, logger):
         print("===== before set visible devices")
         tf.config.set_visible_devices([], 'GPU')
         print("===== after set visible devices")
+        logical_devices = tf.config.list_logical_devices('GPU')
+        print("===== logical devices: ", logical_devices)
 
     os.environ["TF_CONFIG"] = json.dumps({
         "cluster": {
