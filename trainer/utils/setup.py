@@ -128,9 +128,9 @@ def init_ps_distributed(args, logger):
 
         if cluster_resolver.task_type == "worker":
             if cluster_resolver.task_id == 0:
-                config.gpu_options = tf.compat.v1.GPUOptions(visible_device_list="0,1,2,3")
+                config.gpu_options.visible_device_list="0,1,2,3"
             else:
-                config.gpu_options = tf.compat.v1.GPUOptions(visible_device_list="4,5,6,7")
+                config.gpu_options.visible_device_list="4,5,6,7"
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
