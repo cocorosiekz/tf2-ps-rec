@@ -19,6 +19,7 @@ from trainer.utils.setup import create_config
 
 
 def main():
+    print("=====entering parse_args")
     args = parse_args()
     config = create_config(args)
     if args.mode == MODE_PS:
