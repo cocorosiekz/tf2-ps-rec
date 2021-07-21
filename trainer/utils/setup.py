@@ -104,6 +104,7 @@ def init_ps(args, logger):
 
 
 def init_ps_distributed(args, logger):
+    print("=====entering init_ps_distributed")
 
     init_logger(
         full=True,
@@ -221,6 +222,7 @@ def create_in_process_cluster(num_workers, num_ps):
 
 
 def create_config(args):
+    print("===== entering create_config")
     assert not (args.mode == MODE_CPU and args.amp), \
         'Automatic mixed precision conversion works only with GPU'
     assert not args.benchmark or args.benchmark_warmup_steps < args.benchmark_steps, \
