@@ -127,10 +127,13 @@ def init_ps_distributed(args, logger):
         config = tf.compat.v1.ConfigProto()
 
         if cluster_resolver.task_type == "worker":
+            config.gpu_options.allow_growth = True
             if cluster_resolver.task_id == 0:
                 config.gpu_options.visible_device_list="0,1,2,3"
             else:
                 config.gpu_options.visible_device_list="4,5,6,7"
+        else:
+            config.device_count = {'GPU': 0}
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
