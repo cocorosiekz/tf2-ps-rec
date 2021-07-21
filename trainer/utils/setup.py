@@ -111,6 +111,11 @@ def init_ps_distributed(args, logger):
         logger=logger
     )
 
+    if args.ps_task_type == "chief":
+        print("===== before set visible devices")
+        tf.config.set_visible_devices([], 'GPU')
+        print("===== after set visible devices")
+
     os.environ["TF_CONFIG"] = json.dumps({
         "cluster": {
             "worker": ["localhost:19897", "localhost:19898"],
@@ -143,10 +148,6 @@ def init_ps_distributed(args, logger):
             start=True,
             config=config)
         server.join()
-
-    print("===== before set visible devices")
-    tf.config.set_visible_devices([], 'GPU')
-    print("===== after set visible devices")
     
     if args.amp:
         policy = tf.keras.mixed_precision.experimental.Policy("mixed_float16")
