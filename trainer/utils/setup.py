@@ -133,7 +133,7 @@ def init_ps_distributed(args, logger):
             else:
                 config.gpu_options.visible_device_list="4,5,6,7"
         else:
-            config.device_count = {'GPU': 0}
+            config.device_count['GPU'] = 0
 
         server = tf.distribute.Server(
             cluster_resolver.cluster_spec(),
