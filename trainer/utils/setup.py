@@ -143,6 +143,8 @@ def init_ps_distributed(args, logger):
             start=True,
             config=config)
         server.join()
+
+    tf.config.set_visible_devices([], 'GPU')
     
     if args.amp:
         policy = tf.keras.mixed_precision.experimental.Policy("mixed_float16")
